@@ -11,6 +11,7 @@ import {
   Plus,
   ShieldCheck,
   ShoppingBag,
+  Trash2,
   TrendingUp,
   UserCircle,
   Users,
@@ -28,7 +29,7 @@ import {
   setUserActive,
 } from './api'
 import { currentStockValue, expectedProfit, grossProfit, investedAmount, money, revenue, stockForProduct } from './calculations'
-import { clearLocalCache, loadSnapshot, recordSale, saveProductWithBatch } from './db'
+import { clearLocalCache, deleteInventoryItem, loadSnapshot, recordSale, saveProductWithBatch } from './db'
 import type { AuthUser, Product, Sale, StockBatch, TemporaryPasswordResult, UserAccount, UserRole } from './types'
 
 type View = 'dashboard' | 'inventory' | 'add' | 'sales' | 'users' | 'account'
@@ -52,6 +53,7 @@ export default function App() {
   const [sales, setSales] = useState<Sale[]>([])
   const [ready, setReady] = useState(false)
   const [sellProductId, setSellProductId] = useState<string | null>(null)
+  const [deleteProductId, setDeleteProductId] = useState<string | null>(null)
 
   async function refresh() {
     try {
@@ -190,6 +192,7 @@ export default function App() {
     const sale: Sale = {
       id: uid(),
       productId,
+      productName: products.find((product) => product.id === productId)?.name,
       quantity,
       unitSellingPrice,
       totalAmount,
@@ -205,11 +208,18 @@ export default function App() {
     setSellProductId(null)
   }
 
+  async function deleteInventory(productId: string) {
+    await deleteInventoryItem(productId)
+    await refresh()
+    setDeleteProductId(null)
+  }
+
   if (!auth) return <LoginScreen onLogin={handleLogin} />
   if (auth.mustChangePassword) return <PasswordChangeScreen auth={auth} required onChanged={handlePasswordChanged} />
   if (!ready) return <div className="splash">Loading Eni's Inventory…</div>
 
   const isAdmin = auth.role === 'admin'
+  const deleteProduct = deleteProductId ? products.find((product) => product.id === deleteProductId) || null : null
 
   return (
     <div className="app-shell">
@@ -226,7 +236,7 @@ export default function App() {
 
       <main className="main-content">
         {view === 'dashboard' && <Dashboard isAdmin={isAdmin} metrics={metrics} products={products} batches={batches} sales={sales} onSell={setSellProductId} />}
-        {view === 'inventory' && <Inventory isAdmin={isAdmin} products={products} batches={batches} onSell={setSellProductId} onAdd={() => setView('add')} />}
+        {view === 'inventory' && <Inventory isAdmin={isAdmin} products={products} batches={batches} onSell={setSellProductId} onDelete={setDeleteProductId} onAdd={() => setView('add')} />}
         {view === 'add' && <AddStock products={products} onSubmit={addStock} />}
         {view === 'sales' && <Sales isAdmin={isAdmin} products={products} sales={sales} />}
         {view === 'users' && isAdmin && <UserManagement currentUser={auth} />}
@@ -249,6 +259,14 @@ export default function App() {
           available={stockForProduct(sellProductId, batches)}
           onClose={() => setSellProductId(null)}
           onConfirm={makeSale}
+        />
+      )}
+
+      {deleteProduct && (
+        <DeleteInventoryModal
+          product={deleteProduct}
+          onClose={() => setDeleteProductId(null)}
+          onConfirm={() => deleteInventory(deleteProduct.id)}
         />
       )}
     </div>
@@ -374,14 +392,14 @@ function Dashboard({ isAdmin, metrics, products, batches, sales, onSell }: {
     <div className="list-card">
       {recent.map((sale) => {
         const product = products.find((item) => item.id === sale.productId)
-        return <div className="sale-row" key={sale.id}><div><strong>{product?.name || 'Product'}</strong><small>{new Date(sale.soldAt).toLocaleString()}{sale.createdByName ? ` · ${sale.createdByName}` : ''}</small></div><div className="right"><strong>{money(sale.totalAmount)}</strong>{isAdmin && <small className={sale.profit >= 0 ? 'positive' : 'negative'}>{money(sale.profit)} profit</small>}</div></div>
+        return <div className="sale-row" key={sale.id}><div><strong>{product?.name || sale.productName || 'Product'}</strong><small>{new Date(sale.soldAt).toLocaleString()}{sale.createdByName ? ` · ${sale.createdByName}` : ''}</small></div><div className="right"><strong>{money(sale.totalAmount)}</strong>{isAdmin && <small className={sale.profit >= 0 ? 'positive' : 'negative'}>{money(sale.profit)} profit</small>}</div></div>
       })}
       {recent.length === 0 && <Empty message="Sales you record will appear here." />}
     </div>
   </section>
 }
 
-function Inventory({ isAdmin, products, batches, onSell, onAdd }: { isAdmin: boolean; products: Product[]; batches: StockBatch[]; onSell: (id: string) => void; onAdd: () => void }) {
+function Inventory({ isAdmin, products, batches, onSell, onDelete, onAdd }: { isAdmin: boolean; products: Product[]; batches: StockBatch[]; onSell: (id: string) => void; onDelete: (id: string) => void; onAdd: () => void }) {
   const [query, setQuery] = useState('')
   const filtered = products.filter((product) => `${product.name} ${product.category} ${product.sku || ''}`.toLowerCase().includes(query.toLowerCase()))
   return <section className="stack">
@@ -392,7 +410,7 @@ function Inventory({ isAdmin, products, batches, onSell, onAdd }: { isAdmin: boo
         const qty = stockForProduct(product.id, batches)
         const productBatches = batches.filter((batch) => batch.productId === product.id)
         const averageCost = productBatches.length ? productBatches.reduce((sum, batch) => sum + batch.unitCost * batch.quantityRemaining, 0) / Math.max(1, qty) : 0
-        return <article className="product-card" key={product.id}><ProductImage product={product}/><div className="product-card-body"><span className="status-pill">{qty > 0 ? `${qty} in stock` : 'Sold out'}</span><h3>{product.name}</h3><small>{product.category}</small><div className={`price-line ${isAdmin ? '' : 'single'}`}>{isAdmin && <div><small>Cost</small><strong>{money(averageCost)}</strong></div>}<div><small>Selling</small><strong>{money(product.defaultSellingPrice)}</strong></div></div><button className="primary-button" disabled={qty === 0} onClick={() => onSell(product.id)}>Record sale</button></div></article>
+        return <article className="product-card" key={product.id}><ProductImage product={product}/><div className="product-card-body"><span className="status-pill">{qty > 0 ? `${qty} in stock` : 'Sold out'}</span><h3>{product.name}</h3><small>{product.category}</small><div className={`price-line ${isAdmin ? '' : 'single'}`}>{isAdmin && <div><small>Cost</small><strong>{money(averageCost)}</strong></div>}<div><small>Selling</small><strong>{money(product.defaultSellingPrice)}</strong></div></div><div className="product-actions"><button className="primary-button" disabled={qty === 0} onClick={() => onSell(product.id)}>Record sale</button>{isAdmin && <button className="danger-button" onClick={() => onDelete(product.id)} aria-label={`Delete ${product.name}`}><Trash2 size={17}/> Delete</button>}</div></div></article>
       })}
       {filtered.length === 0 && <Empty message="No inventory items match this view." />}
     </div>
@@ -425,7 +443,7 @@ function AddStock({ products, onSubmit }: { products: Product[]; onSubmit: (form
 
 function Sales({ isAdmin, products, sales }: { isAdmin: boolean; products: Product[]; sales: Sale[] }) {
   return <section className="stack"><div className="section-heading"><div><span className="eyebrow">Transaction history</span><h2>Sales</h2></div></div><div className="list-card">
-    {sales.map((sale) => { const product = products.find((item) => item.id === sale.productId); return <div className="sale-row" key={sale.id}><div><strong>{product?.name || 'Product'} × {sale.quantity}</strong><small>{new Date(sale.soldAt).toLocaleString()} · {sale.paymentMethod || 'Payment not set'}{sale.createdByName ? ` · ${sale.createdByName}` : ''}</small></div><div className="right"><strong>{money(sale.totalAmount)}</strong>{isAdmin && <small className={sale.profit >= 0 ? 'positive' : 'negative'}>{money(sale.profit)} profit</small>}</div></div> })}
+    {sales.map((sale) => { const product = products.find((item) => item.id === sale.productId); return <div className="sale-row" key={sale.id}><div><strong>{product?.name || sale.productName || 'Product'} × {sale.quantity}</strong><small>{new Date(sale.soldAt).toLocaleString()} · {sale.paymentMethod || 'Payment not set'}{sale.createdByName ? ` · ${sale.createdByName}` : ''}</small></div><div className="right"><strong>{money(sale.totalAmount)}</strong>{isAdmin && <small className={sale.profit >= 0 ? 'positive' : 'negative'}>{money(sale.profit)} profit</small>}</div></div> })}
     {sales.length === 0 && <Empty message="No sales recorded yet." />}
   </div></section>
 }
@@ -507,6 +525,40 @@ function SellModal({ product, available, onClose, onConfirm }: { product: Produc
     {error && <p className="error-text">{error}</p>}
     <button className="primary-button large" disabled={saving}>{saving ? 'Recording…' : 'Confirm sale'}</button><button type="button" className="text-button" onClick={onClose}>Cancel</button>
   </form></div>
+}
+
+function DeleteInventoryModal({ product, onClose, onConfirm }: { product: Product; onClose: () => void; onConfirm: () => Promise<void> }) {
+  const [deleting, setDeleting] = useState(false)
+  const [error, setError] = useState('')
+
+  async function confirmDelete() {
+    setDeleting(true)
+    setError('')
+    try {
+      await onConfirm()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not delete inventory.')
+      setDeleting(false)
+    }
+  }
+
+  return <div className="modal-backdrop" onMouseDown={deleting ? undefined : onClose}>
+    <section className="modal confirm-modal" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="modal-handle"/>
+      <span className="confirm-icon"><Trash2 size={28}/></span>
+      <div>
+        <span className="eyebrow">Delete inventory</span>
+        <h2>{product.name}</h2>
+      </div>
+      <p>Do you really want to delete this inventory?</p>
+      <small className="muted">This removes it from active inventory and stock totals. Existing sales history will be preserved.</small>
+      {error && <p className="error-text">{error}</p>}
+      <div className="confirm-actions">
+        <button type="button" className="secondary-button" disabled={deleting} onClick={onClose}>No, cancel</button>
+        <button type="button" className="danger-button solid" disabled={deleting} onClick={confirmDelete}>{deleting ? 'Deleting…' : 'Yes, delete'}</button>
+      </div>
+    </section>
+  </div>
 }
 
 function ProductImage({ product }: { product: Product }) { return product.image ? <img className="product-image" src={product.image} alt="" /> : <div className="product-image placeholder"><ShoppingBag size={30}/></div> }
