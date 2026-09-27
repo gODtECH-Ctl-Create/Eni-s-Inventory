@@ -9,7 +9,7 @@ const TAB = {
 }
 
 const HEADERS = {
-  Products: ['id', 'name', 'category', 'sku', 'image', 'defaultSellingPrice', 'createdAt'],
+  Products: ['id', 'name', 'category', 'sku', 'image', 'defaultSellingPrice', 'createdAt', 'archived'],
   Batches: ['id', 'productId', 'productName', 'quantityPurchased', 'totalPurchaseCost', 'unitCost', 'purchaseDate', 'supplier', 'notes', 'createdAt', 'createdByUserId', 'createdByName'],
   Sales: ['id', 'productId', 'productName', 'quantity', 'unitSellingPrice', 'totalAmount', 'costOfGoods', 'profit', 'soldAt', 'paymentMethod', 'customerName', 'createdByUserId', 'createdByName'],
   SaleAllocations: ['saleId', 'batchId', 'quantity', 'unitCost'],
@@ -131,6 +131,10 @@ function doPost(e) {
       } else if (action === 'recordSale') {
         const sale = recordSale_(payload, user)
         audit_(user, 'RECORD_SALE', sale.productName + ' x ' + sale.quantity)
+      } else if (action === 'deleteInventoryItem') {
+        requireAdmin_(user)
+        const deleted = deleteInventoryItem_(payload)
+        audit_(user, 'DELETE_INVENTORY', deleted.name)
       } else {
         throw new Error('Unknown action: ' + action)
       }
@@ -452,6 +456,7 @@ function processStockIntakeRow_(row) {
         image: String(item.imageUrl || '').trim(),
         defaultSellingPrice: sellingPrice,
         createdAt: now,
+        archived: false,
       }
     } else {
       if (item.category) product.category = String(item.category).trim()
@@ -491,6 +496,7 @@ function addProductWithBatch_(payload, user) {
   product.category = product.category || 'Jewelry'
   product.defaultSellingPrice = number_(product.defaultSellingPrice)
   product.createdAt = iso_(product.createdAt || new Date())
+  product.archived = false
   if (product.image) product.image = saveImageIfNeeded_(product.image, product.id)
 
   batch.id = batch.id || Utilities.getUuid()
@@ -512,7 +518,7 @@ function addProductWithBatch_(payload, user) {
 function addBatch_(payload, user) {
   const batch = Object.assign({}, payload.batch || {})
   const product = findObjectById_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], batch.productId)
-  if (!product) throw new Error('Product not found.')
+  if (!product || isTrue_(product.archived)) throw new Error('Product not found.')
 
   batch.id = batch.id || Utilities.getUuid()
   batch.productName = product.name
@@ -526,6 +532,18 @@ function addBatch_(payload, user) {
   batch.createdByName = user.displayName
 
   upsertObject_(TAB.BATCHES, HEADERS[TAB.BATCHES], batch)
+}
+
+function deleteInventoryItem_(payload) {
+  const productId = String(payload.productId || '')
+  if (!productId) throw new Error('Product id is required.')
+
+  const product = findObjectById_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], productId)
+  if (!product || isTrue_(product.archived)) throw new Error('Product not found.')
+
+  product.archived = true
+  upsertObject_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], product)
+  return { id: String(product.id), name: String(product.name || 'Product') }
 }
 
 function recordSale_(payload, user) {
@@ -581,7 +599,11 @@ function recordSale_(payload, user) {
 }
 
 function buildSnapshotRaw_() {
-  const products = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS]).map(function (row) {
+  const productRows = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS]).filter(function (row) {
+    return !isTrue_(row.archived)
+  })
+
+  const products = productRows.map(function (row) {
     return {
       id: String(row.id || ''),
       name: String(row.name || ''),
@@ -592,6 +614,9 @@ function buildSnapshotRaw_() {
       createdAt: iso_(row.createdAt || new Date()),
     }
   }).filter(function (product) { return product.id && product.name })
+
+  const activeProductIds = {}
+  products.forEach(function (product) { activeProductIds[product.id] = true })
 
   const allocationRows = objects_(TAB.ALLOCATIONS, HEADERS[TAB.ALLOCATIONS])
   const allocatedByBatch = {}
@@ -614,13 +639,14 @@ function buildSnapshotRaw_() {
       supplier: String(row.supplier || ''),
       notes: String(row.notes || ''),
     }
-  }).filter(function (batch) { return batch.id && batch.productId })
+  }).filter(function (batch) { return batch.id && batch.productId && activeProductIds[batch.productId] })
 
   const sales = objects_(TAB.SALES, HEADERS[TAB.SALES]).map(function (row) {
     const saleId = String(row.id || '')
     return {
       id: saleId,
       productId: String(row.productId || ''),
+      productName: String(row.productName || ''),
       quantity: number_(row.quantity),
       unitSellingPrice: number_(row.unitSellingPrice),
       totalAmount: number_(row.totalAmount),
@@ -642,7 +668,9 @@ function buildSnapshotRaw_() {
 }
 
 function findProduct_(sku, name) {
-  const products = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS])
+  const products = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS]).filter(function (product) {
+    return !isTrue_(product.archived)
+  })
   const normalizedSku = String(sku || '').trim().toLowerCase()
   const normalizedName = String(name || '').trim().toLowerCase()
   return products.find(function (product) {
