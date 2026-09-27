@@ -47,24 +47,17 @@ Google Sheets is the source of truth. Stock can be entered from the PWA or direc
 
 The frontend asks for the access key the first time it connects. The key is stored only in that browser's local storage; it is not committed to this repository or injected into the public JavaScript bundle.
 
-## Connect GitHub Pages to Apps Script
+## Apps Script endpoint
 
-In the GitHub repository, create an Actions repository variable:
-
-```text
-Name:  VITE_APPS_SCRIPT_URL
-Value: https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec
-```
-
-Path in GitHub:
+The production frontend is currently configured to use:
 
 ```text
-Settings → Secrets and variables → Actions → Variables → New repository variable
+https://script.google.com/macros/s/AKfycbyMuwVzaU6x7sL7IP5dIY8It5OY1Ltyyueh0Huf1O5tMMcH6ITyVnAJlQa3ukHQgHSO3Q/exec
 ```
 
-The Pages workflow injects this URL during the build. The URL itself is not treated as a secret; write/read access is protected by the separate access key generated inside Apps Script.
+The endpoint is configured in `.env.production` and in the GitHub Pages deployment workflow. The URL itself is not a credential; write/read access is protected by the separate Apps Script access key.
 
-For local development, copy `.env.example` to `.env.local` and replace the placeholder with the `/exec` URL.
+For local development, copy `.env.example` to `.env.local` and use the same `/exec` URL.
 
 ## Adding stock directly from Google Sheets
 
