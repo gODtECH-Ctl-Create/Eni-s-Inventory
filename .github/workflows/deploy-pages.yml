@@ -18,7 +18,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      VITE_APPS_SCRIPT_URL: ${{ vars.VITE_APPS_SCRIPT_URL }}
+      VITE_APPS_SCRIPT_URL: https://script.google.com/macros/s/AKfycbyMuwVzaU6x7sL7IP5dIY8It5OY1Ltyyueh0Huf1O5tMMcH6ITyVnAJlQa3ukHQgHSO3Q/exec
     steps:
       - name: Checkout
         uses: actions/checkout@v4
