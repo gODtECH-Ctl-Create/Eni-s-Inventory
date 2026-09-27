@@ -4,7 +4,7 @@ A mobile-first, offline-first inventory and profit tracking PWA for small produc
 
 ## Current MVP
 
-- Add products and stock in purchase batches
+- Add new products or restock existing products in separate purchase batches
 - Capture/upload product photos
 - Track purchase cost, selling price and remaining quantity
 - Record sales with FIFO batch costing
