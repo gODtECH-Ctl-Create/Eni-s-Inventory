@@ -119,6 +119,10 @@ export function createRemoteSale(sale: Sale): Promise<InventorySnapshot> {
   })
 }
 
+export function deleteRemoteInventoryItem(productId: string): Promise<InventorySnapshot> {
+  return request<InventorySnapshot>('deleteInventoryItem', { productId })
+}
+
 export function listUsers(): Promise<UserAccount[]> {
   return request<UserAccount[]>('listUsers')
 }
