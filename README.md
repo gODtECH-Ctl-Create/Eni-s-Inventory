@@ -8,12 +8,41 @@ A mobile-first inventory and profit tracking PWA for small product businesses su
 - **Backend/API:** Google Apps Script Web App
 - **Primary data store:** Google Sheets
 - **Product images:** Google Drive via Apps Script
-- **Local cache:** IndexedDB for fast loading and read access when the backend is temporarily unavailable
+- **Authentication:** Admin/Staff accounts managed by Apps Script
+- **Local cache:** IndexedDB for authenticated offline read access
 
-Google Sheets is the source of truth. Stock can be entered from the PWA or directly from the spreadsheet using the human-friendly **Stock Intake** tab created by Apps Script.
+Google Sheets is the source of truth. Stock can be entered from the PWA or directly from the spreadsheet using the **Stock Intake** tab.
+
+## Roles
+
+### Admin
+
+- Full dashboard including investment, cost, profit and expected profit
+- View inventory and sales
+- Add/restock products
+- Record sales
+- Create Admin or Staff accounts
+- Disable/enable accounts
+- Reset user passwords
+- View who recorded sales through the `createdByName` field and `AuditLog` sheet
+
+### Staff
+
+- View inventory and selling prices
+- Add/restock products
+- Record sales
+- View sales revenue/history
+- Cannot view purchase-cost, investment or profit figures
+- Cannot manage users
+
+Role restrictions are enforced by Apps Script, not only hidden in the frontend.
 
 ## Current MVP
 
+- Admin and Staff login
+- 12-hour server sessions
+- Salted password hashes with a server-side pepper
+- Forced password change after temporary-password login
 - Add new products from the app
 - Restock existing products as separate purchase batches
 - Add inventory directly from the Google Sheet `Stock Intake` tab
@@ -21,64 +50,73 @@ Google Sheets is the source of truth. Stock can be entered from the PWA or direc
 - Store uploaded product photos in Google Drive
 - Track purchase cost, selling price and remaining quantity
 - Record sales with server-side FIFO batch costing
-- Automatically calculate revenue, cost of goods sold and gross profit
-- Dashboard for money invested, stock value, revenue, profit and expected profit
-- Sales history
+- Sales/user audit attribution
 - Installable PWA and service-worker caching
 - GitHub Pages compatible (`/Eni-s-Inventory/` base path)
 
-## Google Sheet setup
+## Upgrade the existing Apps Script deployment
 
-1. Create a new Google Sheet for Eni's Inventory.
-2. In the Sheet, open **Extensions → Apps Script**.
-3. Copy the contents of `apps-script/Code.gs` into the Apps Script editor.
-4. Save the project.
-5. Run `setupInventoryBackend()` once from the Apps Script editor and approve the requested permissions.
-6. The script creates these tabs automatically:
-   - `Stock Intake`
-   - `Products`
-   - `Batches`
-   - `Sales`
-   - `SaleAllocations`
-7. Copy the backend access key shown by the setup dialog. Keep it private.
-8. Deploy the script through **Deploy → New deployment → Web app**.
-9. Set **Execute as** to yourself and make the Web App accessible to **Anyone**.
-10. Copy the production URL ending in `/exec`.
-
-The frontend asks for the access key the first time it connects. The key is stored only in that browser's local storage; it is not committed to this repository or injected into the public JavaScript bundle.
-
-## Apps Script endpoint
-
-The production frontend is currently configured to use:
+The production frontend is configured to use:
 
 ```text
 https://script.google.com/macros/s/AKfycbyMuwVzaU6x7sL7IP5dIY8It5OY1Ltyyueh0Huf1O5tMMcH6ITyVnAJlQa3ukHQgHSO3Q/exec
 ```
 
-The endpoint is configured in `.env.production` and in the GitHub Pages deployment workflow. The URL itself is not a credential; write/read access is protected by the separate Apps Script access key.
+To enable login on the existing deployment:
 
-For local development, copy `.env.example` to `.env.local` and use the same `/exec` URL.
+1. Open the Google Sheet used by Eni's Inventory.
+2. Open **Extensions → Apps Script**.
+3. Replace the existing script with the latest `apps-script/Code.gs` from this repository.
+4. Save the Apps Script project.
+5. Run `setupInventoryBackend()` once from the editor and approve any requested permissions.
+6. The setup function will add/repair these tabs:
+   - `Stock Intake`
+   - `Products`
+   - `Batches`
+   - `Sales`
+   - `SaleAllocations`
+   - `Users`
+   - `AuditLog`
+7. If the `Users` tab is empty, setup creates the first account:
+   - Username: `admin`
+   - Role: `admin`
+   - A random temporary password is shown in the setup dialog.
+8. Copy that temporary password somewhere safe for the first login. It is shown only as a bootstrap credential and is not stored in plaintext.
+9. Open **Deploy → Manage deployments**.
+10. Edit the current Web App deployment, choose **New version**, then deploy it again.
+11. Keep **Execute as: Me** and Web App access set to **Anyone**. The public endpoint is protected by the application login/session layer.
+
+The existing `/exec` URL can remain the same when you update the existing deployment.
+
+## First Admin login
+
+1. Open the PWA.
+2. Sign in with username `admin` and the temporary password generated by `setupInventoryBackend()`.
+3. The app forces a password change before displaying inventory data.
+4. Sign in again with the new password.
+5. Open **Users** from the bottom navigation to create Staff accounts.
+
+When Admin creates a Staff account, the backend generates a temporary password. Share that password privately with the staff member. The staff member must change it on first login.
+
+## Password storage
+
+Plaintext passwords are never written to Google Sheets. The `Users` tab stores:
+
+- username
+- display name
+- role
+- password hash
+- unique salt
+- active/disabled state
+- whether a password change is required
+
+The additional password pepper is stored in Apps Script Script Properties rather than in the Sheet.
 
 ## Adding stock directly from Google Sheets
 
-Use the `Stock Intake` tab rather than manually creating IDs in the backend tables.
+Use the `Stock Intake` tab rather than manually creating IDs in backend tables.
 
-Fill in a row with:
-
-- Product name
-- Category
-- SKU (optional)
-- Image URL (optional when entering through the Sheet)
-- Quantity
-- Total purchase cost
-- Selling price
-- Purchase date
-- Supplier (optional)
-- Notes (optional)
-
-As soon as the required values are present, the Sheet's `onEdit` Apps Script processes the row. It creates or matches the product, creates a new purchase batch, calculates unit cost, and marks the row as `ADDED`.
-
-This means a seller can add stock from either place:
+Fill in a row with product name, category, optional SKU/image URL, quantity, total purchase cost, selling price, purchase date, optional supplier and notes. Apps Script creates or matches the product, creates a purchase batch, calculates unit cost, and marks the intake row `ADDED`.
 
 ```text
 PWA → Apps Script → Google Sheets
@@ -88,11 +126,9 @@ or
 Google Sheet Stock Intake → Apps Script → Products/Batches
 ```
 
-The next refresh in the PWA pulls the same data from the Sheet.
-
 ## Sales and FIFO costing
 
-Sales should be recorded through the app. The Apps Script backend performs the FIFO allocation against the current Sheet data, records the sale, writes its batch allocations, and returns the refreshed inventory snapshot. This keeps profit calculations consistent even when new stock was entered directly in the Sheet.
+Sales should be recorded through the app. Apps Script performs FIFO allocation against current Sheet data, records the sale, writes batch allocations, records which logged-in user performed the sale, and returns a role-filtered inventory snapshot.
 
 ## Run locally
 
@@ -110,8 +146,8 @@ npm run build
 
 ## Deployment
 
-The repository includes a GitHub Actions workflow that builds and deploys `main` to GitHub Pages. If Pages has not been enabled yet, set the repository's Pages source to **GitHub Actions** in the repository settings.
+The repository includes a GitHub Actions workflow that builds and deploys `main` to GitHub Pages. If Pages has not been enabled yet, set the repository's Pages source to **GitHub Actions**.
 
 ## Offline behavior
 
-When the Google Apps Script backend is configured, Google Sheets is authoritative. The latest successful server snapshot is cached in IndexedDB so inventory can still be viewed if connectivity drops. For now, new stock and sales require a connection to the backend; an offline write queue can be added later without changing the Sheet schema.
+A successful authenticated snapshot is cached in IndexedDB for temporary offline reads. Authentication failures do not fall back to cached data, and signing out clears the local inventory cache. New stock and sales still require backend connectivity so Google Sheets remains authoritative.
