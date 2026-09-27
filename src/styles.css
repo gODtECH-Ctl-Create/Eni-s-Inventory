@@ -49,12 +49,16 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .product-card small { color: var(--muted); }
 .status-pill { width: fit-content; padding: 5px 9px; background: #efeaff; color: #5d42ac; border-radius: 999px; font-size: .7rem; font-weight: 750; }
 .price-line { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; margin: 4px 0 3px; }
+.price-line.single { grid-template-columns: 1fr; }
 .price-line div { background: #faf8fc; padding: 8px; border-radius: 12px; }
 .price-line strong, .price-line small { display: block; }
-.primary-button, .secondary-button { border: 0; border-radius: 14px; font-weight: 800; display: inline-flex; justify-content: center; align-items: center; gap: 7px; }
+.product-actions { display: grid; gap: 8px; }
+.primary-button, .secondary-button, .danger-button { border: 0; border-radius: 14px; font-weight: 800; display: inline-flex; justify-content: center; align-items: center; gap: 7px; }
 .primary-button { background: var(--ink); color: white; padding: 11px 13px; }
 .primary-button.large { min-height: 52px; width: 100%; font-size: 1rem; }
 .secondary-button { background: #eee9fb; color: var(--ink); padding: 10px 13px; }
+.danger-button { background: #fff0f0; color: #a92828; padding: 10px 13px; border: 1px solid #f2caca; }
+.danger-button.solid { background: #a92828; color: white; border-color: #a92828; }
 .search { width: 100%; border: 1px solid var(--line); background: white; border-radius: 16px; padding: 14px 16px; outline: 0; }
 .search:focus, .field input:focus, .field textarea:focus, .field select:focus { border-color: #9276e5; box-shadow: 0 0 0 3px rgba(118,87,214,.12); }
 .form-card, .list-card { background: rgba(255,255,255,.94); border: 1px solid var(--line); border-radius: 22px; }
@@ -84,6 +88,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .modal { width: min(100%, 580px); background: white; border-radius: 28px 28px 0 0; padding: 10px 20px calc(22px + env(safe-area-inset-bottom)); display: grid; gap: 14px; max-height: 92vh; overflow: auto; }
 .modal-handle { width: 52px; height: 5px; border-radius: 999px; background: #ddd7e6; margin: 0 auto 5px; }
 .modal-title { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.confirm-modal { text-align: center; padding-top: 18px; }
+.confirm-modal h2 { margin-top: 5px; }
+.confirm-modal p { margin: 0; font-weight: 800; font-size: 1.05rem; }
+.confirm-icon { width: 58px; height: 58px; border-radius: 18px; display: grid; place-items: center; margin: 0 auto; background: #fff0f0; color: #a92828; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 4px; }
 .sale-total { padding: 16px; background: #f5f1ff; border-radius: 16px; display: flex; justify-content: space-between; align-items: center; color: var(--ink); }
 .sale-total strong { font-size: 1.2rem; }
 .text-button { border: 0; background: transparent; color: var(--muted); padding: 9px; }
@@ -94,4 +103,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
   .metric-grid { grid-template-columns: repeat(4, 1fr); }
   .product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .horizontal-products { grid-auto-columns: 180px; }
+  .product-actions { grid-template-columns: 1fr auto; }
 }
