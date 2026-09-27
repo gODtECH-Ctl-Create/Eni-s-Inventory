@@ -1,3 +1,17 @@
+export type UserRole = 'admin' | 'staff'
+
+export type AuthUser = {
+  id: string
+  username: string
+  displayName: string
+  role: UserRole
+  active: boolean
+  mustChangePassword: boolean
+  createdAt: string
+}
+
+export type UserAccount = AuthUser
+
 export type Product = {
   id: string
   name: string
@@ -37,6 +51,7 @@ export type Sale = {
   soldAt: string
   paymentMethod?: string
   customerName?: string
+  createdByName?: string
   allocations: SaleAllocation[]
 }
 
@@ -44,4 +59,14 @@ export type InventorySnapshot = {
   products: Product[]
   batches: StockBatch[]
   sales: Sale[]
+}
+
+export type LoginResult = {
+  token: string
+  user: AuthUser
+}
+
+export type TemporaryPasswordResult = {
+  user: UserAccount
+  temporaryPassword: string
 }
