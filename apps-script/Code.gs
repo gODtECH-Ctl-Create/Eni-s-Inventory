@@ -4,19 +4,25 @@ const TAB = {
   SALES: 'Sales',
   ALLOCATIONS: 'SaleAllocations',
   INTAKE: 'Stock Intake',
+  USERS: 'Users',
+  AUDIT: 'AuditLog',
 }
 
 const HEADERS = {
   Products: ['id', 'name', 'category', 'sku', 'image', 'defaultSellingPrice', 'createdAt'],
-  Batches: ['id', 'productId', 'productName', 'quantityPurchased', 'totalPurchaseCost', 'unitCost', 'purchaseDate', 'supplier', 'notes', 'createdAt'],
-  Sales: ['id', 'productId', 'productName', 'quantity', 'unitSellingPrice', 'totalAmount', 'costOfGoods', 'profit', 'soldAt', 'paymentMethod', 'customerName'],
+  Batches: ['id', 'productId', 'productName', 'quantityPurchased', 'totalPurchaseCost', 'unitCost', 'purchaseDate', 'supplier', 'notes', 'createdAt', 'createdByUserId', 'createdByName'],
+  Sales: ['id', 'productId', 'productName', 'quantity', 'unitSellingPrice', 'totalAmount', 'costOfGoods', 'profit', 'soldAt', 'paymentMethod', 'customerName', 'createdByUserId', 'createdByName'],
   SaleAllocations: ['saleId', 'batchId', 'quantity', 'unitCost'],
   'Stock Intake': ['status', 'productName', 'category', 'sku', 'imageUrl', 'quantity', 'totalPurchaseCost', 'sellingPrice', 'purchaseDate', 'supplier', 'notes'],
+  Users: ['id', 'username', 'displayName', 'role', 'passwordHash', 'salt', 'active', 'mustChangePassword', 'createdAt', 'updatedAt'],
+  AuditLog: ['id', 'timestamp', 'userId', 'username', 'role', 'action', 'details'],
 }
+
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000
 
 function onOpen() {
   SpreadsheetApp.getUi()
-    .createMenu("Eni Inventory")
+    .createMenu('Eni Inventory')
     .addItem('Setup / repair backend', 'setupInventoryBackend')
     .addItem('Process pending stock intake', 'processPendingStockIntake')
     .addToUi()
@@ -36,10 +42,8 @@ function setupInventoryBackend() {
     props.setProperty('IMAGE_FOLDER_ID', folder.getId())
   }
 
-  let accessKey = props.getProperty('API_KEY')
-  if (!accessKey) {
-    accessKey = Utilities.getUuid().replace(/-/g, '')
-    props.setProperty('API_KEY', accessKey)
+  if (!props.getProperty('AUTH_PEPPER')) {
+    props.setProperty('AUTH_PEPPER', Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, ''))
   }
 
   const intake = spreadsheet.getSheetByName(TAB.INTAKE)
@@ -48,50 +52,355 @@ function setupInventoryBackend() {
     intake.getRange('A1:K1').setFontWeight('bold')
   }
 
+  const users = objects_(TAB.USERS, HEADERS[TAB.USERS])
+  let bootstrapMessage = 'Existing user accounts were preserved.'
+  if (users.length === 0) {
+    const temporaryPassword = temporaryPassword_()
+    createUserRecord_('admin', 'Administrator', 'admin', temporaryPassword, true)
+    bootstrapMessage = 'First Admin account created.\n\nUsername: admin\nTemporary password: ' + temporaryPassword + '\n\nYou will be required to change this password after your first login.'
+  }
+
   SpreadsheetApp.getUi().alert(
     'Eni Inventory backend is ready',
-    'Keep this access key private. The PWA will ask for it the first time it connects:\n\n' + accessKey +
-      '\n\nNext: Deploy this script as a Web app, execute as you, with access set to Anyone. Copy the /exec URL into the GitHub Actions variable VITE_APPS_SCRIPT_URL.',
+    bootstrapMessage + '\n\nDeploy or update the Apps Script Web App as a new version. Keep access set to Anyone; application access is now protected by individual Admin/Staff logins.',
     SpreadsheetApp.getUi().ButtonSet.OK
   )
 }
 
 function doGet() {
-  return json_({ ok: true, data: { service: "Eni's Inventory", status: 'ok' } })
+  return json_({ ok: true, data: { service: "Eni's Inventory", status: 'ok', auth: 'admin-staff' } })
 }
 
 function doPost(e) {
   try {
     const request = JSON.parse((e.postData && e.postData.contents) || '{}')
-    if (!authorized_(request.accessKey)) return json_({ ok: false, error: 'UNAUTHORIZED' })
+    const action = String(request.action || '')
+    const payload = request.payload || {}
 
-    if (request.action === 'snapshot') {
-      return json_({ ok: true, data: buildSnapshot_() })
+    if (action === 'login') return json_({ ok: true, data: login_(payload) })
+
+    const session = requireSession_(request.token)
+    const user = session.user
+
+    if (action === 'logout') {
+      logout_(request.token, user)
+      return json_({ ok: true, data: { success: true } })
+    }
+
+    if (action === 'changeOwnPassword') {
+      return json_({ ok: true, data: changeOwnPassword_(user, payload) })
+    }
+
+    if (user.mustChangePassword) {
+      return json_({ ok: false, error: 'PASSWORD_CHANGE_REQUIRED' })
+    }
+
+    if (action === 'snapshot') {
+      return json_({ ok: true, data: buildSnapshotForUser_(user) })
+    }
+
+    if (action === 'listUsers') {
+      requireAdmin_(user)
+      return json_({ ok: true, data: listUsers_() })
+    }
+
+    if (action === 'createUser') {
+      requireAdmin_(user)
+      return json_({ ok: true, data: createUser_(user, payload) })
+    }
+
+    if (action === 'setUserActive') {
+      requireAdmin_(user)
+      return json_({ ok: true, data: setUserActive_(user, payload) })
+    }
+
+    if (action === 'resetUserPassword') {
+      requireAdmin_(user)
+      return json_({ ok: true, data: resetUserPassword_(user, payload) })
     }
 
     const lock = LockService.getScriptLock()
     lock.waitLock(15000)
     try {
-      let data
-      switch (request.action) {
-        case 'addProductWithBatch':
-          data = addProductWithBatch_(request.payload || {})
-          break
-        case 'addBatch':
-          data = addBatch_(request.payload || {})
-          break
-        case 'recordSale':
-          data = recordSale_(request.payload || {})
-          break
-        default:
-          throw new Error('Unknown action: ' + request.action)
+      if (action === 'addProductWithBatch') {
+        addProductWithBatch_(payload, user)
+        audit_(user, 'ADD_PRODUCT_BATCH', payload && payload.product ? payload.product.name : '')
+      } else if (action === 'addBatch') {
+        addBatch_(payload, user)
+        audit_(user, 'ADD_BATCH', payload && payload.batch ? payload.batch.productId : '')
+      } else if (action === 'recordSale') {
+        const sale = recordSale_(payload, user)
+        audit_(user, 'RECORD_SALE', sale.productName + ' x ' + sale.quantity)
+      } else {
+        throw new Error('Unknown action: ' + action)
       }
-      return json_({ ok: true, data: data })
+      return json_({ ok: true, data: buildSnapshotForUser_(user) })
     } finally {
       lock.releaseLock()
     }
   } catch (error) {
-    return json_({ ok: false, error: String(error && error.message ? error.message : error) })
+    const message = String(error && error.message ? error.message : error)
+    return json_({ ok: false, error: message })
+  }
+}
+
+function login_(payload) {
+  cleanupSessions_()
+  const username = normalizeUsername_(payload.username)
+  const password = String(payload.password || '')
+  if (!username || !password) throw new Error('INVALID_CREDENTIALS')
+
+  const user = findUserByUsername_(username)
+  if (!user || !isTrue_(user.active)) throw new Error('INVALID_CREDENTIALS')
+  if (hashPassword_(password, String(user.salt || '')) !== String(user.passwordHash || '')) {
+    throw new Error('INVALID_CREDENTIALS')
+  }
+
+  const token = Utilities.getUuid().replace(/-/g, '') + Utilities.getUuid().replace(/-/g, '')
+  const session = {
+    userId: String(user.id),
+    expiresAt: Date.now() + SESSION_TTL_MS,
+  }
+  PropertiesService.getScriptProperties().setProperty('SESSION_' + token, JSON.stringify(session))
+  const safeUser = publicUser_(user)
+  audit_(safeUser, 'LOGIN', '')
+  return { token: token, user: safeUser }
+}
+
+function logout_(token, user) {
+  if (token) PropertiesService.getScriptProperties().deleteProperty('SESSION_' + String(token))
+  audit_(user, 'LOGOUT', '')
+}
+
+function requireSession_(token) {
+  if (!token) throw new Error('UNAUTHENTICATED')
+  const props = PropertiesService.getScriptProperties()
+  const key = 'SESSION_' + String(token)
+  const raw = props.getProperty(key)
+  if (!raw) throw new Error('UNAUTHENTICATED')
+
+  let session
+  try { session = JSON.parse(raw) } catch (error) { session = null }
+  if (!session || number_(session.expiresAt) <= Date.now()) {
+    props.deleteProperty(key)
+    throw new Error('SESSION_EXPIRED')
+  }
+
+  const user = findObjectById_(TAB.USERS, HEADERS[TAB.USERS], session.userId)
+  if (!user || !isTrue_(user.active)) {
+    props.deleteProperty(key)
+    throw new Error('UNAUTHENTICATED')
+  }
+
+  return { token: String(token), user: publicUser_(user) }
+}
+
+function cleanupSessions_() {
+  const props = PropertiesService.getScriptProperties()
+  const all = props.getProperties()
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf('SESSION_') !== 0) return
+    try {
+      const session = JSON.parse(all[key])
+      if (!session || number_(session.expiresAt) <= Date.now()) props.deleteProperty(key)
+    } catch (error) {
+      props.deleteProperty(key)
+    }
+  })
+}
+
+function changeOwnPassword_(user, payload) {
+  const currentPassword = String(payload.currentPassword || '')
+  const newPassword = String(payload.newPassword || '')
+  validatePassword_(newPassword)
+
+  const row = findObjectById_(TAB.USERS, HEADERS[TAB.USERS], user.id)
+  if (!row) throw new Error('USER_NOT_FOUND')
+  if (hashPassword_(currentPassword, String(row.salt || '')) !== String(row.passwordHash || '')) {
+    throw new Error('CURRENT_PASSWORD_INCORRECT')
+  }
+
+  const salt = newSalt_()
+  row.salt = salt
+  row.passwordHash = hashPassword_(newPassword, salt)
+  row.mustChangePassword = false
+  row.updatedAt = new Date().toISOString()
+  upsertObject_(TAB.USERS, HEADERS[TAB.USERS], row)
+  revokeUserSessions_(user.id)
+  audit_(user, 'CHANGE_PASSWORD', '')
+  return { success: true }
+}
+
+function listUsers_() {
+  return objects_(TAB.USERS, HEADERS[TAB.USERS]).map(publicUser_)
+}
+
+function createUser_(admin, payload) {
+  const username = normalizeUsername_(payload.username)
+  const displayName = String(payload.displayName || '').trim()
+  const role = String(payload.role || 'staff').toLowerCase() === 'admin' ? 'admin' : 'staff'
+  if (!username) throw new Error('Username is required.')
+  if (!displayName) throw new Error('Display name is required.')
+  if (findUserByUsername_(username)) throw new Error('USERNAME_EXISTS')
+
+  const temporaryPassword = temporaryPassword_()
+  const user = createUserRecord_(username, displayName, role, temporaryPassword, true)
+  audit_(admin, 'CREATE_USER', username + ' (' + role + ')')
+  return { user: publicUser_(user), temporaryPassword: temporaryPassword }
+}
+
+function setUserActive_(admin, payload) {
+  const id = String(payload.userId || '')
+  if (!id) throw new Error('User id is required.')
+  if (id === admin.id && !Boolean(payload.active)) throw new Error('You cannot deactivate your own account.')
+
+  const row = findObjectById_(TAB.USERS, HEADERS[TAB.USERS], id)
+  if (!row) throw new Error('USER_NOT_FOUND')
+  row.active = Boolean(payload.active)
+  row.updatedAt = new Date().toISOString()
+  upsertObject_(TAB.USERS, HEADERS[TAB.USERS], row)
+  if (!row.active) revokeUserSessions_(id)
+  audit_(admin, row.active ? 'ACTIVATE_USER' : 'DEACTIVATE_USER', String(row.username || ''))
+  return publicUser_(row)
+}
+
+function resetUserPassword_(admin, payload) {
+  const id = String(payload.userId || '')
+  const row = findObjectById_(TAB.USERS, HEADERS[TAB.USERS], id)
+  if (!row) throw new Error('USER_NOT_FOUND')
+
+  const temporaryPassword = temporaryPassword_()
+  const salt = newSalt_()
+  row.salt = salt
+  row.passwordHash = hashPassword_(temporaryPassword, salt)
+  row.mustChangePassword = true
+  row.updatedAt = new Date().toISOString()
+  upsertObject_(TAB.USERS, HEADERS[TAB.USERS], row)
+  revokeUserSessions_(id)
+  audit_(admin, 'RESET_PASSWORD', String(row.username || ''))
+  return { user: publicUser_(row), temporaryPassword: temporaryPassword }
+}
+
+function createUserRecord_(username, displayName, role, password, mustChangePassword) {
+  validatePassword_(password)
+  const salt = newSalt_()
+  const now = new Date().toISOString()
+  const user = {
+    id: Utilities.getUuid(),
+    username: normalizeUsername_(username),
+    displayName: String(displayName || '').trim(),
+    role: role === 'admin' ? 'admin' : 'staff',
+    passwordHash: hashPassword_(password, salt),
+    salt: salt,
+    active: true,
+    mustChangePassword: Boolean(mustChangePassword),
+    createdAt: now,
+    updatedAt: now,
+  }
+  upsertObject_(TAB.USERS, HEADERS[TAB.USERS], user)
+  return user
+}
+
+function publicUser_(row) {
+  return {
+    id: String(row.id || ''),
+    username: String(row.username || ''),
+    displayName: String(row.displayName || row.username || ''),
+    role: String(row.role || 'staff') === 'admin' ? 'admin' : 'staff',
+    active: isTrue_(row.active),
+    mustChangePassword: isTrue_(row.mustChangePassword),
+    createdAt: iso_(row.createdAt || new Date()),
+  }
+}
+
+function requireAdmin_(user) {
+  if (!user || user.role !== 'admin') throw new Error('FORBIDDEN')
+}
+
+function findUserByUsername_(username) {
+  const normalized = normalizeUsername_(username)
+  return objects_(TAB.USERS, HEADERS[TAB.USERS]).find(function (row) {
+    return normalizeUsername_(row.username) === normalized
+  }) || null
+}
+
+function normalizeUsername_(value) {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '.')
+}
+
+function validatePassword_(password) {
+  if (String(password || '').length < 8) throw new Error('Password must be at least 8 characters.')
+}
+
+function newSalt_() {
+  return Utilities.getUuid().replace(/-/g, '')
+}
+
+function temporaryPassword_() {
+  return 'Eni-' + Utilities.getUuid().replace(/-/g, '').slice(0, 10) + '!'
+}
+
+function hashPassword_(password, salt) {
+  const pepper = PropertiesService.getScriptProperties().getProperty('AUTH_PEPPER') || ''
+  const bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256,
+    String(salt) + ':' + String(password) + ':' + pepper,
+    Utilities.Charset.UTF_8
+  )
+  return bytes.map(function (byte) {
+    const value = byte < 0 ? byte + 256 : byte
+    return ('0' + value.toString(16)).slice(-2)
+  }).join('')
+}
+
+function revokeUserSessions_(userId) {
+  const props = PropertiesService.getScriptProperties()
+  const all = props.getProperties()
+  Object.keys(all).forEach(function (key) {
+    if (key.indexOf('SESSION_') !== 0) return
+    try {
+      const session = JSON.parse(all[key])
+      if (String(session.userId || '') === String(userId)) props.deleteProperty(key)
+    } catch (error) {
+      props.deleteProperty(key)
+    }
+  })
+}
+
+function audit_(user, action, details) {
+  try {
+    appendObject_(TAB.AUDIT, HEADERS[TAB.AUDIT], {
+      id: Utilities.getUuid(),
+      timestamp: new Date().toISOString(),
+      userId: user && user.id ? user.id : '',
+      username: user && user.username ? user.username : '',
+      role: user && user.role ? user.role : '',
+      action: action,
+      details: String(details || ''),
+    })
+  } catch (error) {
+    console.warn('Could not write audit record:', error)
+  }
+}
+
+function buildSnapshotForUser_(user) {
+  const snapshot = buildSnapshotRaw_()
+  if (user.role === 'admin') return snapshot
+
+  return {
+    products: snapshot.products,
+    batches: snapshot.batches.map(function (batch) {
+      return Object.assign({}, batch, { totalPurchaseCost: 0, unitCost: 0 })
+    }),
+    sales: snapshot.sales.map(function (sale) {
+      return Object.assign({}, sale, {
+        costOfGoods: 0,
+        profit: 0,
+        allocations: sale.allocations.map(function (allocation) {
+          return Object.assign({}, allocation, { unitCost: 0 })
+        }),
+      })
+    }),
   }
 }
 
@@ -114,24 +423,19 @@ function onEdit(e) {
 function processPendingStockIntake() {
   const sheet = spreadsheet_().getSheetByName(TAB.INTAKE)
   if (!sheet || sheet.getLastRow() < 2) return
-  for (let row = 2; row <= sheet.getLastRow(); row += 1) {
-    processStockIntakeRow_(row)
-  }
+  for (let row = 2; row <= sheet.getLastRow(); row += 1) processStockIntakeRow_(row)
 }
 
 function processStockIntakeRow_(row) {
-  const spreadsheet = spreadsheet_()
-  const sheet = spreadsheet.getSheetByName(TAB.INTAKE)
+  const sheet = spreadsheet_().getSheetByName(TAB.INTAKE)
   const values = sheet.getRange(row, 1, 1, HEADERS[TAB.INTAKE].length).getValues()[0]
   const item = rowToObject_(HEADERS[TAB.INTAKE], values)
-
   if (String(item.status || '').trim()) return
 
   const name = String(item.productName || '').trim()
   const quantity = number_(item.quantity)
   const totalPurchaseCost = number_(item.totalPurchaseCost)
   const sellingPrice = number_(item.sellingPrice)
-
   if (!name || quantity <= 0 || totalPurchaseCost < 0 || item.sellingPrice === '') return
 
   const lock = LockService.getScriptLock()
@@ -139,7 +443,6 @@ function processStockIntakeRow_(row) {
   try {
     let product = findProduct_(String(item.sku || '').trim(), name)
     const now = new Date().toISOString()
-
     if (!product) {
       product = {
         id: Utilities.getUuid(),
@@ -156,7 +459,6 @@ function processStockIntakeRow_(row) {
       if (item.imageUrl) product.image = String(item.imageUrl).trim()
       if (item.sellingPrice !== '') product.defaultSellingPrice = sellingPrice
     }
-
     upsertObject_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], product)
 
     const batch = {
@@ -170,8 +472,9 @@ function processStockIntakeRow_(row) {
       supplier: String(item.supplier || '').trim(),
       notes: String(item.notes || '').trim(),
       createdAt: now,
+      createdByUserId: '',
+      createdByName: 'Google Sheet',
     }
-
     upsertObject_(TAB.BATCHES, HEADERS[TAB.BATCHES], batch)
     sheet.getRange(row, 1).setValue('ADDED | ' + Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss'))
   } finally {
@@ -179,7 +482,7 @@ function processStockIntakeRow_(row) {
   }
 }
 
-function addProductWithBatch_(payload) {
+function addProductWithBatch_(payload, user) {
   const product = Object.assign({}, payload.product || {})
   const batch = Object.assign({}, payload.batch || {})
   if (!product.name) throw new Error('Product name is required.')
@@ -199,13 +502,14 @@ function addProductWithBatch_(payload) {
   batch.unitCost = batch.totalPurchaseCost / batch.quantityPurchased
   batch.purchaseDate = dateOnly_(batch.purchaseDate || new Date())
   batch.createdAt = iso_(batch.createdAt || new Date())
+  batch.createdByUserId = user.id
+  batch.createdByName = user.displayName
 
   upsertObject_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], product)
   upsertObject_(TAB.BATCHES, HEADERS[TAB.BATCHES], batch)
-  return buildSnapshot_()
 }
 
-function addBatch_(payload) {
+function addBatch_(payload, user) {
   const batch = Object.assign({}, payload.batch || {})
   const product = findObjectById_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS], batch.productId)
   if (!product) throw new Error('Product not found.')
@@ -218,19 +522,19 @@ function addBatch_(payload) {
   batch.unitCost = batch.totalPurchaseCost / batch.quantityPurchased
   batch.purchaseDate = dateOnly_(batch.purchaseDate || new Date())
   batch.createdAt = iso_(batch.createdAt || new Date())
+  batch.createdByUserId = user.id
+  batch.createdByName = user.displayName
 
   upsertObject_(TAB.BATCHES, HEADERS[TAB.BATCHES], batch)
-  return buildSnapshot_()
 }
 
-function recordSale_(payload) {
+function recordSale_(payload, user) {
   const incoming = Object.assign({}, payload.sale || {})
   incoming.id = incoming.id || Utilities.getUuid()
-
   const existing = findObjectById_(TAB.SALES, HEADERS[TAB.SALES], incoming.id)
-  if (existing) return buildSnapshot_()
+  if (existing) return existing
 
-  const snapshot = buildSnapshot_()
+  const snapshot = buildSnapshotRaw_()
   const product = snapshot.products.find(function (item) { return item.id === incoming.productId })
   if (!product) throw new Error('Product not found.')
 
@@ -241,25 +545,18 @@ function recordSale_(payload) {
   const candidates = snapshot.batches
     .filter(function (batch) { return batch.productId === incoming.productId && batch.quantityRemaining > 0 })
     .sort(function (a, b) { return String(a.purchaseDate).localeCompare(String(b.purchaseDate)) })
-
   const available = candidates.reduce(function (sum, batch) { return sum + batch.quantityRemaining }, 0)
   if (quantity > available) throw new Error('Only ' + available + ' items are available in stock.')
 
   let remaining = quantity
   let costOfGoods = 0
   const allocations = []
-
   candidates.forEach(function (batch) {
     if (remaining <= 0) return
     const used = Math.min(batch.quantityRemaining, remaining)
     remaining -= used
     costOfGoods += used * batch.unitCost
-    allocations.push({
-      saleId: incoming.id,
-      batchId: batch.id,
-      quantity: used,
-      unitCost: batch.unitCost,
-    })
+    allocations.push({ saleId: incoming.id, batchId: batch.id, quantity: used, unitCost: batch.unitCost })
   })
 
   const totalAmount = quantity * unitSellingPrice
@@ -275,17 +572,15 @@ function recordSale_(payload) {
     soldAt: iso_(incoming.soldAt || new Date()),
     paymentMethod: String(incoming.paymentMethod || '').trim(),
     customerName: String(incoming.customerName || '').trim(),
+    createdByUserId: user.id,
+    createdByName: user.displayName,
   }
-
   upsertObject_(TAB.SALES, HEADERS[TAB.SALES], sale)
-  allocations.forEach(function (allocation) {
-    appendObject_(TAB.ALLOCATIONS, HEADERS[TAB.ALLOCATIONS], allocation)
-  })
-
-  return buildSnapshot_()
+  allocations.forEach(function (allocation) { appendObject_(TAB.ALLOCATIONS, HEADERS[TAB.ALLOCATIONS], allocation) })
+  return sale
 }
 
-function buildSnapshot_() {
+function buildSnapshotRaw_() {
   const products = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS]).map(function (row) {
     return {
       id: String(row.id || ''),
@@ -334,14 +629,11 @@ function buildSnapshot_() {
       soldAt: iso_(row.soldAt || new Date()),
       paymentMethod: String(row.paymentMethod || ''),
       customerName: String(row.customerName || ''),
+      createdByName: String(row.createdByName || ''),
       allocations: allocationRows
         .filter(function (allocation) { return String(allocation.saleId || '') === saleId })
         .map(function (allocation) {
-          return {
-            batchId: String(allocation.batchId || ''),
-            quantity: number_(allocation.quantity),
-            unitCost: number_(allocation.unitCost),
-          }
+          return { batchId: String(allocation.batchId || ''), quantity: number_(allocation.quantity), unitCost: number_(allocation.unitCost) }
         }),
     }
   }).filter(function (sale) { return sale.id && sale.productId })
@@ -353,7 +645,6 @@ function findProduct_(sku, name) {
   const products = objects_(TAB.PRODUCTS, HEADERS[TAB.PRODUCTS])
   const normalizedSku = String(sku || '').trim().toLowerCase()
   const normalizedName = String(name || '').trim().toLowerCase()
-
   return products.find(function (product) {
     if (normalizedSku && String(product.sku || '').trim().toLowerCase() === normalizedSku) return true
     return String(product.name || '').trim().toLowerCase() === normalizedName
@@ -391,13 +682,9 @@ function upsertObject_(sheetName, headers, object) {
     const index = ids.indexOf(id)
     if (index >= 0) rowNumber = index + 2
   }
-
   const values = headers.map(function (header) { return object[header] === undefined ? '' : object[header] })
-  if (rowNumber > 0) {
-    sheet.getRange(rowNumber, 1, 1, headers.length).setValues([values])
-  } else {
-    sheet.appendRow(values)
-  }
+  if (rowNumber > 0) sheet.getRange(rowNumber, 1, 1, headers.length).setValues([values])
+  else sheet.appendRow(values)
 }
 
 function appendObject_(sheetName, headers, object) {
@@ -419,31 +706,17 @@ function ensureSheet_(spreadsheet, name, headers) {
 function saveImageIfNeeded_(value, id) {
   const input = String(value || '')
   if (input.indexOf('data:image/') !== 0) return input
-
   const match = input.match(/^data:(image\/[a-zA-Z0-9.+-]+);base64,(.+)$/)
   if (!match) throw new Error('Invalid image data.')
 
-  const props = PropertiesService.getScriptProperties()
-  const folderId = props.getProperty('IMAGE_FOLDER_ID')
+  const folderId = PropertiesService.getScriptProperties().getProperty('IMAGE_FOLDER_ID')
   if (!folderId) throw new Error('Image folder is not configured. Run setupInventoryBackend first.')
-
   const mimeType = match[1]
   const extension = mimeType.split('/')[1].replace('jpeg', 'jpg')
   const blob = Utilities.newBlob(Utilities.base64Decode(match[2]), mimeType, id + '.' + extension)
   const file = DriveApp.getFolderById(folderId).createFile(blob)
-
-  try {
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW)
-  } catch (error) {
-    console.warn('Could not enable link sharing for image:', error)
-  }
-
+  try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW) } catch (error) { console.warn(error) }
   return 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w1000'
-}
-
-function authorized_(providedKey) {
-  const expected = PropertiesService.getScriptProperties().getProperty('API_KEY')
-  return Boolean(expected && providedKey && String(providedKey) === expected)
 }
 
 function spreadsheet_() {
@@ -452,6 +725,10 @@ function spreadsheet_() {
   const active = SpreadsheetApp.getActiveSpreadsheet()
   if (!active) throw new Error('Spreadsheet is not configured. Run setupInventoryBackend first.')
   return active
+}
+
+function isTrue_(value) {
+  return value === true || String(value).toLowerCase() === 'true' || String(value) === '1'
 }
 
 function number_(value) {
