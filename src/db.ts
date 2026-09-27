@@ -1,3 +1,10 @@
+import {
+  createRemoteBatch,
+  createRemoteProductWithBatch,
+  createRemoteSale,
+  fetchRemoteSnapshot,
+  remoteBackendConfigured,
+} from './api'
 import type { InventorySnapshot, Product, Sale, StockBatch } from './types'
 
 const DB_NAME = 'eni-inventory-db'
@@ -29,7 +36,7 @@ function requestToPromise<T>(request: IDBRequest<T>): Promise<T> {
   })
 }
 
-export async function loadSnapshot(): Promise<InventorySnapshot> {
+async function loadLocalSnapshot(): Promise<InventorySnapshot> {
   const db = await openDb()
   const tx = db.transaction([PRODUCTS, BATCHES, SALES], 'readonly')
   const [products, batches, sales] = await Promise.all([
@@ -41,7 +48,49 @@ export async function loadSnapshot(): Promise<InventorySnapshot> {
   return { products, batches, sales }
 }
 
+async function cacheSnapshot(snapshot: InventorySnapshot): Promise<void> {
+  const db = await openDb()
+  const tx = db.transaction([PRODUCTS, BATCHES, SALES], 'readwrite')
+  const productStore = tx.objectStore(PRODUCTS)
+  const batchStore = tx.objectStore(BATCHES)
+  const salesStore = tx.objectStore(SALES)
+
+  productStore.clear()
+  batchStore.clear()
+  salesStore.clear()
+  snapshot.products.forEach((product) => productStore.put(product))
+  snapshot.batches.forEach((batch) => batchStore.put(batch))
+  snapshot.sales.forEach((sale) => salesStore.put(sale))
+
+  await new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => resolve()
+    tx.onerror = () => reject(tx.error)
+    tx.onabort = () => reject(tx.error)
+  })
+  db.close()
+}
+
+export async function loadSnapshot(): Promise<InventorySnapshot> {
+  if (remoteBackendConfigured()) {
+    try {
+      const snapshot = await fetchRemoteSnapshot()
+      await cacheSnapshot(snapshot)
+      return snapshot
+    } catch (error) {
+      console.warn('Google Sheets backend unavailable; using the last local cache.', error)
+    }
+  }
+
+  return loadLocalSnapshot()
+}
+
 export async function saveProductWithBatch(product: Product, batch: StockBatch): Promise<void> {
+  if (remoteBackendConfigured()) {
+    const snapshot = await createRemoteProductWithBatch(product, batch)
+    await cacheSnapshot(snapshot)
+    return
+  }
+
   const db = await openDb()
   const tx = db.transaction([PRODUCTS, BATCHES], 'readwrite')
   tx.objectStore(PRODUCTS).put(product)
@@ -55,6 +104,12 @@ export async function saveProductWithBatch(product: Product, batch: StockBatch):
 }
 
 export async function saveBatch(batch: StockBatch): Promise<void> {
+  if (remoteBackendConfigured()) {
+    const snapshot = await createRemoteBatch(batch)
+    await cacheSnapshot(snapshot)
+    return
+  }
+
   const db = await openDb()
   const tx = db.transaction(BATCHES, 'readwrite')
   tx.objectStore(BATCHES).put(batch)
@@ -66,6 +121,12 @@ export async function saveBatch(batch: StockBatch): Promise<void> {
 }
 
 export async function recordSale(sale: Sale, updatedBatches: StockBatch[]): Promise<void> {
+  if (remoteBackendConfigured()) {
+    const snapshot = await createRemoteSale(sale)
+    await cacheSnapshot(snapshot)
+    return
+  }
+
   const db = await openDb()
   const tx = db.transaction([BATCHES, SALES], 'readwrite')
   const batchStore = tx.objectStore(BATCHES)
