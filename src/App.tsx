@@ -49,24 +49,36 @@ export default function App() {
 
   async function addStock(form: HTMLFormElement) {
     const data = new FormData(form)
+    const existingProductId = String(data.get('existingProductId') || '')
+    const existingProduct = products.find((item) => item.id === existingProductId)
     const name = String(data.get('name') || '').trim()
+    const category = String(data.get('category') || '').trim()
+    const sku = String(data.get('sku') || '').trim()
     const quantity = Number(data.get('quantity'))
     const totalCost = Number(data.get('totalCost'))
     const sellingPrice = Number(data.get('sellingPrice'))
-    if (!name || quantity <= 0 || totalCost < 0 || sellingPrice < 0) return
+    if ((!existingProduct && !name) || quantity <= 0 || totalCost < 0 || sellingPrice < 0) return
 
     const imageFile = data.get('image') as File | null
     const image = imageFile && imageFile.size > 0 ? await fileToDataUrl(imageFile) : undefined
     const now = new Date().toISOString()
-    const product: Product = {
-      id: uid(),
-      name,
-      category: String(data.get('category') || 'Jewelry').trim() || 'Jewelry',
-      sku: String(data.get('sku') || '').trim() || undefined,
-      image,
-      defaultSellingPrice: sellingPrice,
-      createdAt: now,
-    }
+    const product: Product = existingProduct
+      ? {
+          ...existingProduct,
+          category: category || existingProduct.category,
+          sku: sku || existingProduct.sku,
+          image: image || existingProduct.image,
+          defaultSellingPrice: sellingPrice,
+        }
+      : {
+          id: uid(),
+          name,
+          category: category || 'Jewelry',
+          sku: sku || undefined,
+          image,
+          defaultSellingPrice: sellingPrice,
+          createdAt: now,
+        }
     const batch: StockBatch = {
       id: uid(),
       productId: product.id,
@@ -137,7 +149,7 @@ export default function App() {
       <main className="main-content">
         {view === 'dashboard' && <Dashboard metrics={metrics} products={products} batches={batches} sales={sales} onSell={setSellProductId} />}
         {view === 'inventory' && <Inventory products={products} batches={batches} onSell={setSellProductId} onAdd={() => setView('add')} />}
-        {view === 'add' && <AddStock onSubmit={addStock} />}
+        {view === 'add' && <AddStock products={products} onSubmit={addStock} />}
         {view === 'sales' && <Sales products={products} sales={sales} />}
       </main>
 
@@ -234,7 +246,7 @@ function Inventory({ products, batches, onSell, onAdd }: { products: Product[]; 
   </section>
 }
 
-function AddStock({ onSubmit }: { onSubmit: (form: HTMLFormElement) => Promise<void> }) {
+function AddStock({ products, onSubmit }: { products: Product[]; onSubmit: (form: HTMLFormElement) => Promise<void> }) {
   const [saving, setSaving] = useState(false)
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -243,9 +255,10 @@ function AddStock({ onSubmit }: { onSubmit: (form: HTMLFormElement) => Promise<v
     try { await onSubmit(form) } finally { setSaving(false) }
   }
   return <section className="stack"><div className="section-heading"><div><span className="eyebrow">New purchase</span><h2>Add stock batch</h2></div></div><form className="form-card" onSubmit={submit}>
-    <label className="image-upload"><input type="file" name="image" accept="image/*" capture="environment"/><PackagePlus size={30}/><span>Add product photo</span><small>Camera or gallery</small></label>
-    <div className="field"><label>Product name</label><input name="name" required placeholder="e.g. Gold butterfly necklace" /></div>
-    <div className="field-row"><div className="field"><label>Category</label><input name="category" defaultValue="Jewelry" /></div><div className="field"><label>SKU</label><input name="sku" placeholder="Optional" /></div></div>
+    {products.length > 0 && <div className="field"><label>Restock an existing product</label><select name="existingProductId" defaultValue=""><option value="">Create a new product</option>{products.map((product) => <option key={product.id} value={product.id}>{product.name}</option>)}</select><small className="field-hint">Choose an existing item to add this purchase as another batch.</small></div>}
+    <label className="image-upload"><input type="file" name="image" accept="image/*" capture="environment"/><PackagePlus size={30}/><span>Add product photo</span><small>Camera or gallery · optional when restocking</small></label>
+    <div className="field"><label>Product name</label><input name="name" placeholder="Required only for a new product" /></div>
+    <div className="field-row"><div className="field"><label>Category</label><input name="category" placeholder="Defaults to Jewelry" /></div><div className="field"><label>SKU</label><input name="sku" placeholder="Optional" /></div></div>
     <div className="field-row"><div className="field"><label>Quantity</label><input name="quantity" required type="number" min="1" inputMode="numeric" /></div><div className="field"><label>Total purchase cost</label><input name="totalCost" required type="number" min="0" step="0.01" inputMode="decimal" /></div></div>
     <div className="field"><label>Selling price per item</label><input name="sellingPrice" required type="number" min="0" step="0.01" inputMode="decimal" /></div>
     <div className="field"><label>Purchase date</label><input name="purchaseDate" type="date" defaultValue={new Date().toISOString().slice(0,10)} /></div>
