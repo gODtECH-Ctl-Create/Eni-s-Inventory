@@ -3,6 +3,7 @@ import {
   createRemoteBatch,
   createRemoteProductWithBatch,
   createRemoteSale,
+  deleteRemoteInventoryItem,
   fetchRemoteSnapshot,
   remoteBackendConfigured,
 } from './api'
@@ -145,4 +146,10 @@ export async function recordSale(sale: Sale, updatedBatches: StockBatch[]): Prom
     tx.onabort = () => reject(tx.error)
   })
   db.close()
+}
+
+export async function deleteInventoryItem(productId: string): Promise<void> {
+  if (!remoteBackendConfigured()) throw new Error('Deleting inventory requires the Google Sheets backend.')
+  const snapshot = await deleteRemoteInventoryItem(productId)
+  await cacheSnapshot(snapshot)
 }
