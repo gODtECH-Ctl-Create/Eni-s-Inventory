@@ -43,6 +43,7 @@ export type SaleAllocation = {
 export type Sale = {
   id: string
   productId: string
+  productName?: string
   quantity: number
   unitSellingPrice: number
   totalAmount: number
